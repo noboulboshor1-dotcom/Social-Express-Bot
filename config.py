@@ -64,3 +64,12 @@ TASK_STALE_MINUTES = _env_int("TASK_STALE_MINUTES", 30)   # abandoned tasks retu
 VERIFY_REQUIRE_ADDRESS = _env_bool("VERIFY_REQUIRE_ADDRESS", True)
 
 # Reward rates for approved, proof-based task categories are set in review_csv.py.
+# ক্যাটাগরিভিত্তিক ফিক্সড রিওয়ার্ড (টাকা বা পয়েন্ট)
+CATEGORY_REWARDS = {
+    "gmail": 10.00,      
+    "facebook": 4.00,    
+    "instagram": 5.00,
+    "facebook_cookies": 4.00,
+    "instagram_cookies": 5.00
+}
+
