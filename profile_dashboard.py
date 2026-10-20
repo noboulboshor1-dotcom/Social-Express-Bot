@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from database import db
@@ -74,6 +75,9 @@ async def refresh_profile(callback: CallbackQuery) -> None:
         if callback.message:
             await callback.message.edit_text(text, reply_markup=_profile_keyboard())
         await callback.answer("Profile refreshed")
+    except TelegramBadRequest:
+        # ব্যালেন্স বা ডেটা পরিবর্তন না হলে টেলিগ্রাম এই এরর দেয়, আমরা এটি ইগনোর করব
+        await callback.answer() 
     except Exception:
         logger.exception("Could not refresh profile for user_id=%s", callback.from_user.id)
         await callback.answer("প্রোফাইল রিফ্রেশ করা যায়নি। পরে চেষ্টা করুন।", show_alert=True)

@@ -7,20 +7,15 @@ import secrets
 import string
 import struct
 import time
+import aiohttp
 
 DEFAULT_TASK_REWARD = 10.0
 
-# Domains the 1secmail API serves; recovery mailboxes are generated on this domain.
-RECOVERY_DOMAIN = "1secmail.com"
-
 _FIRST_NAMES = ["sidney", "alex", "david", "michael", "robert", "john", "william", "james"]
-
 
 class TaskManager:
     @staticmethod
-    def generate_random_gmail() -> dict:
-        """Generate a fallback task (used when admin stock is empty).
-        Only DB-safe keys are returned so it can be inserted as-is."""
+    async def generate_random_gmail() -> dict:
         name = secrets.choice(_FIRST_NAMES)
         digits = "".join(secrets.choice(string.digits) for _ in range(4))
         chars = "".join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(6))
@@ -35,7 +30,31 @@ class TaskManager:
         secrets.SystemRandom().shuffle(pw_chars)
         password = "".join(pw_chars)
 
-        recovery = f"rec_{chars}{secrets.token_hex(2)}@{RECOVERY_DOMAIN}"
+        # --- Mail.tm Integration ---
+        recovery_pass = secrets.token_urlsafe(12)
+        # 1secmail পুরোপুরি বাদ দিয়ে Mail.tm এর একটি ডিফল্ট ডোমেইন ব্যাকআপ হিসেবে রাখা হলো
+        recovery_email = f"rec_{chars}@mail.tm" 
+        
+        try:
+            conn = aiohttp.TCPConnector(ssl=False)
+            async with aiohttp.ClientSession(connector=conn) as session:
+                # 1. Fetch available domain from Mail.tm
+                async with session.get("https://api.mail.tm/domains") as resp:
+                    if resp.status == 200:
+                        domains_data = await resp.json()
+                        domain = domains_data["hydra:member"][0]["domain"]
+                        recovery_email = f"rec_{chars}@{domain}"
+                
+                # 2. Create Mail.tm Account
+                payload = {"address": recovery_email, "password": recovery_pass}
+                async with session.post("https://api.mail.tm/accounts", json=payload) as resp:
+                    pass # Account successfully registered
+        except Exception as e:
+            print(f"Mail.tm account creation error: {e}")
+
+        # ইমেইল এবং পাসওয়ার্ড | চিহ্ন দিয়ে সেভ করা হলো
+        recovery = f"{recovery_email}|{recovery_pass}"
+
         return {
             "email": email,
             "password": password,
@@ -51,7 +70,6 @@ class TaskManager:
         last = task.get("last_name") or "❌"
         return first, last
 
-    # --- TOTP (RFC 6238, stdlib only) -----------------------------------
     @staticmethod
     def normalize_secret(raw: str) -> str | None:
         secret = re.sub(r"[\s\-]", "", raw or "").upper().rstrip("=")
@@ -59,7 +77,6 @@ class TaskManager:
 
     @classmethod
     def generate_totp(cls, raw_secret: str, for_time: float | None = None) -> tuple[str, int] | None:
-        """Return (6-digit code, seconds until it rotates) or None for an invalid key."""
         secret = cls.normalize_secret(raw_secret)
         if not secret:
             return None
@@ -73,6 +90,5 @@ class TaskManager:
         offset = digest[-1] & 0x0F
         value = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
         return str(value % 1_000_000).zfill(6), 30 - int(now % 30)
-
 
 task_manager = TaskManager()
