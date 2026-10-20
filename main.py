@@ -305,7 +305,7 @@ def build_dispatcher() -> Dispatcher:
     dp.include_router(profile_router)
     dp.include_router(gift_router)
     dp.include_router(review_csv_router)
-    dp.include_router(withdrawal_settings_router)
+    dp.include_router(withdraw_settings_router)
     dp.include_router(social_router)  # safe proof-only shim; no credential collection
     dp.include_router(router)
     return dp
