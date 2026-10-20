@@ -3,7 +3,6 @@ import os
 import csv
 import logging
 import html
-import random
 
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
@@ -13,7 +12,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from database import db
 from keyboards import get_main_keyboard, get_cancel_keyboard, BTN_TASKS, safe_edit, MENU_BUTTONS
-from config import ADMIN_IDS, CATEGORY_REWARDS, FB_FIRST_NAME, FB_LAST_NAME, FB_PASSWORD
+from config import ADMIN_IDS, CATEGORY_REWARDS
 from tasks import task_manager
 from verifier import inbox_verifier, API_ERROR, UNSUPPORTED
 
@@ -37,7 +36,11 @@ def append_to_csv(filename, row):
         writer.writerow(row)
 
 def parse_credentials(stock_string):
-    if ":" in stock_string:
+    # | অথবা : দিয়ে আলাদা করা স্টক সাপোর্ট করবে (যেমন: email|pass বা email:pass)
+    if "|" in stock_string:
+        u, p = stock_string.split("|", 1)
+        return u.strip(), p.strip()
+    elif ":" in stock_string:
         u, p = stock_string.split(":", 1)
         return u.strip(), p.strip()
     return stock_string, "N/A"
@@ -212,7 +215,6 @@ async def handle_verify_task(callback: CallbackQuery, state: FSMContext):
             await safe_edit(callback.message, _gmail_task_text(task) + f"\n\n❌ <b>ভেরিফিকেশন ব্যর্থ!</b>\n{reason}", _gmail_task_kb())
             return
 
-        # Verification Success -> Mark complete in DB
         result = await db.complete_task(task["id"], user_id)
         await state.clear()
         if not result:
@@ -220,7 +222,6 @@ async def handle_verify_task(callback: CallbackQuery, state: FSMContext):
             await callback.message.answer("প্রধান মেনু:", reply_markup=get_main_keyboard())
             return
 
-        # SAVE TO CSV
         append_to_csv('gmail_master.csv', [task["email"], task["password"]])
 
         await safe_edit(
@@ -241,44 +242,62 @@ async def handle_verify_task(callback: CallbackQuery, state: FSMContext):
     finally:
         _verifying.discard(user_id)
 
-# --- FACEBOOK AND INSTAGRAM TASK SELECTION ---
+# --- FACEBOOK AND INSTAGRAM TASK SELECTION (PULLS FROM STOCK) ---
 @social_router.callback_query(F.data.startswith("cat_task_"))
 async def handle_category_selection(callback: CallbackQuery, state: FSMContext):
     cat_key = callback.data.removeprefix("cat_task_")
     user_id = callback.from_user.id
 
     if cat_key == "facebook":
+        stock_item = await db.get_unused_stock("facebook")
+        if not stock_item:
+            await callback.answer("⚠️ দুঃখিত! বর্তমানে ফেসবুকের কোনো কাজ স্টকে নেই।", show_alert=True)
+            return
+
+        account_info, password = parse_credentials(stock_item['account_data'])
+        await db.mark_stock_as_used(stock_item['id'], user_id=user_id)
+        
         fb_reward = CATEGORY_REWARDS.get("facebook", 4.0)
         await state.set_state(SocialTaskStates.waiting_for_fb_uid)
+        await state.update_data(fb_user=account_info, fb_pass=password)
+
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Send UID", callback_data="prompt_fb_uid")],
             [InlineKeyboardButton(text="❌ Cancel Task", callback_data="cancel_task")]
         ])
         text = (
             "📘 <b>Facebook Account Task</b>\n\n"
-            f"👤 <b>First Name:</b> <code>{html.escape(FB_FIRST_NAME)}</code>\n"
-            f"👤 <b>Last Name:</b> <code>{html.escape(FB_LAST_NAME)}</code>\n"
-            f"🔑 <b>Password:</b> <code>{html.escape(FB_PASSWORD)}</code>\n\n"
+            f"👤 <b>Account:</b> <code>{html.escape(account_info)}</code>\n"
+            f"🔑 <b>Password:</b> <code>{html.escape(password)}</code>\n\n"
             f"💰 <b>রিওয়ার্ড:</b> <code>{fb_reward:.2f} BDT</code>\n\n"
-            "📌 ওপরের তথ্য দিয়ে ফেসবুক একাউন্ট তৈরি করে 2FA সেট করুন। তারপর নিচে <b>Send UID</b> বাটনে ক্লিক করুন:"
+            "📌 ওপরের তথ্য দিয়ে ফেসবুক একাউন্টে লগইন করে 2FA সেট করুন। তারপর নিচে <b>Send UID</b> বাটনে ক্লিক করুন:"
         )
         await safe_edit(callback.message, text, kb)
         await callback.message.answer("⚠️ ইউআইডি টাইপ করে পাঠাতে পারেন অথবা নিচে ক্যানসেল করতে পারেন:", reply_markup=get_cancel_keyboard())
 
     elif cat_key == "fb_cookies":
+        stock_item = await db.get_unused_stock("facebook")
+        if not stock_item:
+            await callback.answer("⚠️ দুঃখিত! বর্তমানে ফেসবুকের কোনো কাজ স্টকে নেই।", show_alert=True)
+            return
+
+        account_info, password = parse_credentials(stock_item['account_data'])
+        await db.mark_stock_as_used(stock_item['id'], user_id=user_id)
+
         fb_reward = CATEGORY_REWARDS.get("facebook_cookies", 8.0)
         await state.set_state(SocialTaskStates.waiting_for_fb_cookies_uid)
+        await state.update_data(fb_user=account_info, fb_pass=password)
+
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Send UID", callback_data="prompt_fb_cookies_uid")],
             [InlineKeyboardButton(text="❌ Cancel Task", callback_data="cancel_task")]
         ])
         text = (
             "🍪 <b>Facebook Cookies Task</b>\n\n"
-            f"👤 <b>First Name:</b> <code>{html.escape(FB_FIRST_NAME)}</code>\n"
-            f"👤 <b>Last Name:</b> <code>{html.escape(FB_LAST_NAME)}</code>\n"
-            f"🔑 <b>Password:</b> <code>{html.escape(FB_PASSWORD)}</code>\n\n"
+            f"👤 <b>Account:</b> <code>{html.escape(account_info)}</code>\n"
+            f"🔑 <b>Password:</b> <code>{html.escape(password)}</code>\n\n"
             f"💰 <b>রিওয়ার্ড:</b> <code>{fb_reward:.2f} BDT</code>\n\n"
-            "📌 একাউন্ট তৈরি করে নিচে <b>Send UID</b> বাটনে ক্লিক করুন:"
+            "📌 ওপরের তথ্য দিয়ে লগইন করুন এবং কুকিজ নিয়ে নিচে <b>Send UID</b> বাটনে ক্লিক করুন:"
         )
         await safe_edit(callback.message, text, kb)
         await callback.message.answer("⚠️ ইউআইডি টাইপ করে পাঠাতে পারেন অথবা নিচে ক্যানসেল করতে পারেন:", reply_markup=get_cancel_keyboard())
@@ -286,7 +305,7 @@ async def handle_category_selection(callback: CallbackQuery, state: FSMContext):
     elif cat_key == "instagram":
         stock_item = await db.get_unused_stock("instagram")
         if not stock_item:
-            await callback.answer("⚠️ দুঃখিত! বর্তমানে ইনস্টাগ্রামের কোনো কাজ এভেলেবল নেই।", show_alert=True)
+            await callback.answer("⚠️ দুঃখিত! বর্তমানে ইনস্টাগ্রামের কোনো কাজ স্টকে নেই।", show_alert=True)
             return
 
         username, password = parse_credentials(stock_item['account_data'])
@@ -298,8 +317,8 @@ async def handle_category_selection(callback: CallbackQuery, state: FSMContext):
         insta_reward = CATEGORY_REWARDS.get("instagram", 5.0)
         text = (
             "📸 <b>Instagram Account Task</b>\n\n"
-            f"👤 <b>Username:</b> <code>{username}</code>\n"
-            f"🔐 <b>Password:</b> <code>{password}</code>\n"
+            f"👤 <b>Username:</b> <code>{html.escape(username)}</code>\n"
+            f"🔐 <b>Password:</b> <code>{html.escape(password)}</code>\n"
             f"💰 <b>রিওয়ার্ড:</b> <code>{insta_reward:.2f} BDT</code>\n\n"
             "📌 উপরোক্ত তথ্য দিয়ে একাউন্ট লগইন করে 2FA চালু করুন এবং নিচের <b>2FA Set</b> বাটনে ক্লিক করুন।"
         )
@@ -311,11 +330,17 @@ async def handle_category_selection(callback: CallbackQuery, state: FSMContext):
         await callback.message.answer("⚠️ আপনার 2FA Key পেস্ট করে সেন্ড করুন:", reply_markup=get_cancel_keyboard())
 
     elif cat_key == "insta_cookies":
+        stock_item = await db.get_unused_stock("instagram")
+        if not stock_item:
+            await callback.answer("⚠️ দুঃখিত! বর্তমানে ইনস্টাগ্রামের কোনো কাজ স্টকে নেই।", show_alert=True)
+            return
+
+        username, password = parse_credentials(stock_item['account_data'])
+        await db.mark_stock_as_used(stock_item['id'], user_id=user_id)
+
         insta_reward = CATEGORY_REWARDS.get("instagram_cookies", 8.0)
-        username = f"user_{user_id}_{random.randint(100, 999)}"
-        password = "Pass@instacookies"
-        await state.update_data(insta_user=username, insta_pass=password)
         await state.set_state(SocialTaskStates.waiting_for_insta_cookies)
+        await state.update_data(insta_user=username, insta_pass=password)
         
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🍪 Submit Cookies", callback_data="prompt_insta_cookies")],
@@ -323,10 +348,10 @@ async def handle_category_selection(callback: CallbackQuery, state: FSMContext):
         ])
         text = (
             "🍪 <b>Instagram Cookies Task</b>\n\n"
-            f"👤 <b>Username:</b> <code>{username}</code>\n"
-            f"🔐 <b>Password:</b> <code>{password}</code>\n"
+            f"👤 <b>Username:</b> <code>{html.escape(username)}</code>\n"
+            f"🔐 <b>Password:</b> <code>{html.escape(password)}</code>\n"
             f"💰 <b>রিওয়ার্ড:</b> <code>{insta_reward:.2f} BDT</code>\n\n"
-            "📌 একাউন্ট তৈরি করে কুকিজ নিয়ে নিচের বাটনে চাপুন।"
+            "📌 লগইন করে কুকিজ নিয়ে নিচের বাটনে চাপুন।"
         )
         await safe_edit(callback.message, text, kb)
         await callback.message.answer("⚠️ কুকিজ পেস্ট করে সেন্ড করুন:", reply_markup=get_cancel_keyboard())
@@ -371,15 +396,15 @@ async def process_fb_2fa(message: Message, state: FSMContext):
     two_fa = message.text.strip()
     data = await state.get_data()
     uid = data.get("fb_uid")
+    password = data.get("fb_pass", "N/A")
     user_id = message.from_user.id
     
-    append_to_csv('facebook_master.csv', [uid, FB_PASSWORD, two_fa])
+    append_to_csv('facebook_master.csv', [uid, password, two_fa])
     sub_id = await db.add_submission(user_id, "facebook_2fa", f"UID: {uid} | 2FA: {two_fa}")
     await state.clear()
     
     await message.answer("⏳ <b>আপনার ফেসবুক 2FA কাজ জমা নেওয়া হয়েছে!</b>\nরিভিউর জন্য পেন্ডিং রয়েছে।", parse_mode="HTML", reply_markup=get_main_keyboard())
     
-    # Notify Admin
     admin_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Accept", callback_data=f"app_sub_{sub_id}_{user_id}_fb"),
          InlineKeyboardButton(text="❌ Reject", callback_data=f"rej_sub_{sub_id}_{user_id}_fb")]
@@ -406,9 +431,10 @@ async def process_fb_cookies(message: Message, state: FSMContext):
     if len(cookies) > 10:
         data = await state.get_data()
         uid = data.get("fb_uid")
+        password = data.get("fb_pass", "N/A")
         user_id = message.from_user.id
         
-        append_to_csv('facebook_cookies_master.csv', [uid, FB_PASSWORD, cookies])
+        append_to_csv('facebook_cookies_master.csv', [uid, password, cookies])
         sub_id = await db.add_submission(user_id, "facebook_cookies", f"UID: {uid} | Cookies: {cookies}")
         await state.clear()
         
@@ -552,7 +578,6 @@ async def process_reject_reason(message: Message, state: FSMContext):
             "দয়া করে নিয়ম মেনে আবার সঠিকভাবে চেষ্টা করুন।"
         )
     except Exception: pass
-
 
 # --- EXPORT ACCOUNTS (/export_accounts) ---
 @social_router.message(Command("export_accounts"))
