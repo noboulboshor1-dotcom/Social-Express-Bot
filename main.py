@@ -125,6 +125,10 @@ async def handle_referral(message: Message):
     me = await message.bot.me()
     ref_link = f"https://t.me/{me.username}?start={user_id}"
     pct = await db.get_float_setting("referral_commission", 10.0)
+    share_text = (
+        "ভাই, আপনি কি Gmail, Instagram এবং Facebook এর কাজ করে প্রতিদিন ভালো টাকা ইনকাম করতে চান? 💵🔥\n\n"
+        "আমি এই বোটে কাজ করে পেমেন্ট পাচ্ছি! আপনিও এখনই নিচের লিংকে চাপ দিয়ে কাজ শুরু করে ইনকাম করুন 🚀👇"
+    )
 
     share_url = f"https://t.me/share/url?url={quote(ref_link, safe='')}&text={quote('Join this amazing earning bot!')}"
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🌐 Share Now", url=share_url)]])
@@ -157,7 +161,7 @@ async def handle_iam_new(message: Message):
         reply_markup=get_main_keyboard(),
     )
 
-@router.message()
+@router.message(F.chat.type == "private")
 async def unknown_command_handler(message: Message):
     await message.answer(
         "┏ ⚠️ <b>অপরিচিত কমান্ড বা বার্তা!</b>\n"
