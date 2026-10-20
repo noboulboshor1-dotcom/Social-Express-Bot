@@ -1,7 +1,6 @@
 import asyncio
 import contextlib
 import html
-import io
 import logging
 import signal
 import time
@@ -25,6 +24,7 @@ from config import (
     LOCK_TTL,
     PORT,
     SUPPORT_USERNAME,
+    TASK_STALE_MINUTES,
 )
 from database import db
 from keyboards import (
@@ -34,32 +34,25 @@ from keyboards import (
     BTN_NEW,
     BTN_REFERRALS,
     BTN_SUPPORT,
-    BTN_TASKS,
     MENU_BUTTONS,
-    get_cancel_keyboard,
     get_main_keyboard,
-    safe_edit,
 )
+
+# --- সবগুলো প্রিমিয়াম রাউটার ইম্পোর্ট ---
 from social_tasks import social_router
-from profile_dashboard import profile_router
-from gift_codes import gift_router
-from review_csv import review_csv_router
-from withdrawal_settings import withdraw_settings_router
 from withdraw import withdraw_router
+from verifier import inbox_verifier
+from gift_codes import gift_router
+from withdrawal_settings import withdraw_settings_router
+from profile_dashboard import profile_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 router = Router(name="user")
 
-
-
-
 def _fmt(x) -> str:
     return f"{float(x):.2f}"
-
-
-
 
 # ----------------------------------------------------------------------------
 # MIDDLEWARES
@@ -75,7 +68,6 @@ class BanMiddleware(BaseMiddleware):
             return None
         return await handler(event, data)
 
-
 class MenuResetMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: Message, data):
         if event.text in MENU_BUTTONS:
@@ -84,9 +76,8 @@ class MenuResetMiddleware(BaseMiddleware):
                 await state.clear()
         return await handler(event, data)
 
-
 # ----------------------------------------------------------------------------
-# START / MENU
+# START / MENU COMMANDS
 # ----------------------------------------------------------------------------
 @router.message(CommandStart())
 async def cmd_start(message: Message, command: CommandObject, state: FSMContext):
@@ -104,16 +95,15 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext)
 
     await message.answer(
         f"🌟 <b>স্বাগতম, {html.escape(message.from_user.first_name)}!</b>\n\n"
-        "🚀 <b>মাইক্রো-টাস্ক ও আর্নিং প্ল্যাটফর্মে স্বাগতম।</b>\n"
-        "অনুমোদিত কাজ সম্পন্ন করে public proof URL জমা দিন; admin review শেষে প্রযোজ্য reward যোগ হবে।\n\n"
+        "🚀 <b>পেশাদার মাইক্রো-টাস্ক ও আর্নিং প্ল্যাটফর্মে আপনাকে স্বাগতম।</b>\n"
+        "আমাদের এই অটোমেটেড সিস্টেমের মাধ্যমে আপনি খুব সহজেই বিভিন্ন টাস্ক সম্পন্ন করে প্রতিদিন নিশ্চিত আয় করতে পারবেন।\n\n"
         "📌 <b>মূল বৈশিষ্ট্যসমূহ:</b>\n"
-        "▪️ Proof-based task submission ও review\n"
-        "▪️ Profile dashboard, gift codes এবং referral income\n"
-        "▪️ Admin-reviewed withdrawals\n\n"
+        "▪️ দ্রুত ও অটোমেটেড জিমেইল ভেরিফিকেশন\n"
+        "▪️ ইনস্ট্যান্ট ডেইলি বোনাস ও রেফারেল কমিশন\n"
+        "▪️ নিরাপদ ও ঝামেলাহীন উইথড্রো সিস্টেম\n\n"
         "👇 কাজ শুরু করতে নিচের মেনু থেকে অপশন নির্বাচন করুন:",
         reply_markup=get_main_keyboard(),
     )
-
 
 @router.message(F.text == BTN_CANCEL)
 async def handle_cancel_button(message: Message, state: FSMContext):
@@ -121,14 +111,12 @@ async def handle_cancel_button(message: Message, state: FSMContext):
     await db.release_user_task(message.from_user.id)
     await message.answer("❌ কাজ বাতিল করা হয়েছে।", reply_markup=get_main_keyboard())
 
-
 @router.message(F.text == BTN_BONUS)
 async def handle_daily_bonus(message: Message):
     _, msg, _ = await db.claim_daily_bonus(message.from_user.id)
     await message.answer(msg, reply_markup=get_main_keyboard())
 
-
-
+# NOTE: BTN_BALANCE is intentionally excluded here because profile_router handles it beautifully!
 
 @router.message(F.text == BTN_REFERRALS)
 async def handle_referral(message: Message):
@@ -149,7 +137,6 @@ async def handle_referral(message: Message):
         reply_markup=kb,
     )
 
-
 @router.message(F.text == BTN_SUPPORT)
 async def handle_support(message: Message):
     await message.answer(
@@ -159,95 +146,17 @@ async def handle_support(message: Message):
         reply_markup=get_main_keyboard(),
     )
 
-
 @router.message(F.text == BTN_NEW)
 async def handle_iam_new(message: Message):
     await message.answer(
         "💡 <b>নতুনদের জন্য নির্দেশিকা:</b>\n\n"
-        "১. অনুমোদিত micro-task সম্পন্ন করুন।\n"
-        "২. <code>/submitproof website_feedback https://example.org/proof</code> দিয়ে proof URL জমা দিন।\n"
-        "৩. Review-এর অবস্থা My Profile থেকে দেখুন।\n"
+        "১. <b>Tasks ▸</b> থেকে পছন্দের টাস্ক নিন।\n"
+        "২. জিমেইল টাস্কে রিকভারি মেইল বসিয়ে অটোভেরিফাই করুন।\n"
+        "৩. ফেসবুক ও ইনস্টাগ্রাম টাস্কে আইডি/2FA কী সাবমিট করুন।\n"
         "৪. প্রতিদিন <b>Daily Bonus</b> দাবি করুন!",
         reply_markup=get_main_keyboard(),
     )
 
-
-# ----------------------------------------------------------------------------
-# TASKS & CATEGORY SELECTION
-# ----------------------------------------------------------------------------
-SAFE_TASK_CATEGORIES = frozenset({"website_feedback", "content_review", "data_labeling", "qa_testing"})
-
-
-@router.message(F.text == BTN_TASKS)
-async def handle_tasks_menu(message: Message):
-    categories = [
-        cat for cat in await db.get_categories()
-        if cat.get("is_enabled") and cat.get("category_key") in SAFE_TASK_CATEGORIES
-    ]
-    if not categories:
-        await message.answer(
-            "📋 নিরাপদ proof-based task জমা দিতে এই command ব্যবহার করুন:\n"
-            "<code>/submitproof website_feedback https://example.org/proof</code>\n\n"
-            "অনুমোদিত category: <code>website_feedback</code>, <code>content_review</code>, "
-            "<code>data_labeling</code>, <code>qa_testing</code>",
-            reply_markup=get_main_keyboard(),
-        )
-        return
-    rows = [[InlineKeyboardButton(text=cat["category_name"], callback_data=f"cat_task_{cat['category_key']}")] for cat in categories]
-    await message.answer("🎯 Category নির্বাচন করুন; এরপর /submitproof দিয়ে public HTTPS proof URL জমা দিন:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
-
-
-@router.callback_query(F.data.startswith("cat_task_"))
-async def handle_category_selection(callback: CallbackQuery):
-    category = callback.data.removeprefix("cat_task_")
-    if category not in SAFE_TASK_CATEGORIES:
-        await callback.answer("এই task category চালু নেই।", show_alert=True)
-        return
-    await callback.message.answer(
-        f"Category: <code>{category}</code>\n"
-        f"ব্যবহার করুন: <code>/submitproof {category} https://example.org/proof</code>"
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "cancel_task")
-async def handle_cancel_task(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await db.release_user_task(callback.from_user.id)
-    await safe_edit(callback.message, "❌ টাস্কটি বাতিল করা হয়েছে।")
-    await callback.message.answer("প্রধান মেনু:", reply_markup=get_main_keyboard())
-    await callback.answer()
-
-
-# --- Gmail verification ------------------------------------------------------
-
-
-# --- Facebook Submissions & Admin Review Flow ---------------------------------
-
-
-
-
-
-
-# --- Instagram Submissions & Admin Review Flow --------------------------------
-
-
-
-
-# ----------------------------------------------------------------------------
-# ADMIN ACCEPT / REJECT & FILE EXPORT (/export_accounts)
-# ----------------------------------------------------------------------------
-
-
-
-
-
-
-
-
-# ----------------------------------------------------------------------------
-# UNKNOWN COMMAND FALLBACK HANDLER
-# ----------------------------------------------------------------------------
 @router.message()
 async def unknown_command_handler(message: Message):
     await message.answer(
@@ -257,7 +166,6 @@ async def unknown_command_handler(message: Message):
         "┗ 💡 দয়া করে নিচের মেনু ব্যবহার করুন অথবা বট রিফ্রেশ করতে /start লিখুন।",
         parse_mode="HTML"
     )
-
 
 # ----------------------------------------------------------------------------
 # GLOBAL ERROR HANDLER
@@ -272,13 +180,11 @@ async def on_error(event: ErrorEvent) -> bool:
             await update.message.answer("⚠️ একটি সমস্যা হয়েছে, আবার চেষ্টা করুন।")
     return True
 
-
 # ----------------------------------------------------------------------------
 # WEB SERVER (Render health check)
 # ----------------------------------------------------------------------------
 async def handle_web(_request: web.Request) -> web.Response:
-    return web.Response(text="Micro-task bot healthy")
-
+    return web.Response(text="Ultimate Farmer Bot is Live! 🚀")
 
 async def start_web_server() -> web.AppRunner:
     app = web.Application()
@@ -290,9 +196,8 @@ async def start_web_server() -> web.AppRunner:
     logger.info("🌐 Server running on port %s", PORT)
     return runner
 
-
 # ----------------------------------------------------------------------------
-# SINGLE-INSTANCE POLLING
+# SINGLE-INSTANCE POLLING & ROUTER SETUP
 # ----------------------------------------------------------------------------
 def build_dispatcher() -> Dispatcher:
     dp = Dispatcher()
@@ -300,16 +205,20 @@ def build_dispatcher() -> Dispatcher:
     dp.callback_query.outer_middleware(BanMiddleware())
     dp.message.outer_middleware(MenuResetMiddleware())
     dp.errors.register(on_error)
+    
+    # সবগুলো রাউটার এখানে ইনক্লুড করা হলো
     dp.include_router(admin_router)
     dp.include_router(withdraw_router)
-    dp.include_router(profile_router)
+    dp.include_router(social_router)
+    
+    # নতুন যুক্ত করা ৩টি প্রিমিয়াম ফিচার
     dp.include_router(gift_router)
-    dp.include_router(review_csv_router)
     dp.include_router(withdraw_settings_router)
-    dp.include_router(social_router)  # safe proof-only shim; no credential collection
+    dp.include_router(profile_router)
+    
+    # সবার শেষে মূল ইউজার রাউটার
     dp.include_router(router)
     return dp
-
 
 async def leader_keeper(dp: Dispatcher, lost: asyncio.Event) -> None:
     last_ok = time.monotonic()
@@ -325,7 +234,6 @@ async def leader_keeper(dp: Dispatcher, lost: asyncio.Event) -> None:
             with contextlib.suppress(Exception):
                 await dp.stop_polling()
             return
-
 
 async def run_polling(bot: Bot, dp: Dispatcher, stop_event: asyncio.Event) -> None:
     while not stop_event.is_set():
@@ -371,7 +279,6 @@ async def run_polling(bot: Bot, dp: Dispatcher, stop_event: asyncio.Event) -> No
             break
         logger.warning("Lease lost - going back to the queue.")
 
-
 async def main() -> None:
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = build_dispatcher()
@@ -385,14 +292,14 @@ async def main() -> None:
     runner = await start_web_server()
     try:
         await db.connect()
-        logger.info("Safe proof-based micro-task bot starting.")
+        logger.info("Abandoned Gmail tasks return to stock after %s min.", TASK_STALE_MINUTES)
         await run_polling(bot, dp, stop_event)
     finally:
         await db.release_leader()
+        await inbox_verifier.close()
         await bot.session.close()
         await runner.cleanup()
         logger.info("Bot stopped cleanly.")
-
 
 if __name__ == "__main__":
     try:
