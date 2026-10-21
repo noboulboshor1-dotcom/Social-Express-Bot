@@ -1,4 +1,3 @@
-
 import asyncio
 import logging
 import math
@@ -216,8 +215,6 @@ class Database:
                     "users"
                 ).insert(user_data).execute()
             except Exception:
-                # Concurrent registration হলে duplicate row এড়ায়,
-                # যদি user_id কলামটি UNIQUE হয়।
                 existing = await self.get_user(user_id)
                 if existing:
                     return existing
@@ -308,7 +305,6 @@ class Database:
             return banned
         except Exception:
             logger.exception("Error checking ban status for %s", user_id)
-            # Database error হলে ভুল করে banned নয় বলা এড়ানো।
             return True
 
     async def set_user_ban_status(
@@ -401,10 +397,6 @@ class Database:
         forbid_negative_balance: bool = False,
         retries: int = 8,
     ) -> tuple[str, Optional[dict]]:
-        """
-        Compare-and-swap update.
-        একই সময়ে একাধিক request এলে lost update কমায়।
-        """
         client = self._db()
         fields = list(deltas)
 
@@ -439,7 +431,6 @@ class Database:
                 "user_id", user_id
             )
 
-            # আগের মানের সঙ্গে মিললে তবেই update।
             for field in fields:
                 if row.get(field) is None:
                     query = query.is_(field, "null")
@@ -492,7 +483,6 @@ class Database:
 
             old_checkin = user.get("last_checkin")
 
-            # Conditional update: একই দিনে দ্বিতীয়বার claim আটকায়।
             marked = await self._db().table("users").update(
                 {"last_checkin": today}
             ).eq(
@@ -514,8 +504,6 @@ class Database:
             )
 
             if status != "ok":
-                # Rollback কেবল তখনই, যদি check-in এখনও আমাদের
-                # claim করা তারিখেই থাকে।
                 rollback = self._db().table("users").update(
                     {"last_checkin": old_checkin}
                 ).eq(
@@ -647,8 +635,6 @@ class Database:
 
                 await asyncio.sleep(0.05)
 
-            # fallback_task থাকলে সেটির schema অবশ্যই tasks table-এর
-            # সঙ্গে মিলতে হবে এবং প্রয়োজনীয় অনুমতি থাকতে হবে।
             if fallback_task:
                 row = dict(fallback_task)
                 row.update({
@@ -688,10 +674,6 @@ class Database:
         task_id: int,
         user_id: int,
     ) -> Optional[dict]:
-        """
-        Assigned task সম্পন্ন করে reward দেয়।
-        Task-এর reward কলাম থাকতে হবে।
-        """
         try:
             client = self._db()
 
@@ -725,7 +707,6 @@ class Database:
             )
 
             if status != "ok":
-                # Rollback শুধুমাত্র task এখনও completed থাকলে।
                 await client.table("tasks").update({
                     "status": "assigned",
                 }).eq(
@@ -891,6 +872,38 @@ class Database:
             logger.exception("Error fetching accepted submissions")
             return []
 
+    async def approve_submission_and_reward(self, sub_id: int | str, user_id: int, reward: float) -> Optional[dict]:
+        """
+        ম্যানুয়াল টাস্ক অ্যাকসেপ্ট হলে ব্যালেন্স, টাস্ক কাউন্ট ও রেফারেল কমিশন আপডেট করে।
+        """
+        updated = await self.update_submission_status(sub_id, "accepted")
+        if not updated:
+            return None
+
+        status, user_row = await self._apply_deltas(
+            user_id,
+            {"balance": reward, "completed_tasks": 1},
+        )
+        if status != "ok":
+            return None
+
+        result = {"reward": reward, "referrer_id": None, "commission": 0.0}
+        referrer_id = (user_row or {}).get("referred_by")
+
+        if referrer_id and referrer_id != user_id:
+            pct = await self.get_float_setting("referral_commission", 10.0)
+            commission = round(reward * max(0.0, pct) / 100.0, 4)
+
+            if commission > 0:
+                ref_status, _ = await self._apply_deltas(
+                    referrer_id,
+                    {"balance": commission, "referral_income": commission},
+                )
+                if ref_status == "ok":
+                    result.update({"referrer_id": referrer_id, "commission": commission})
+
+        return result
+
     # ================================================================
     # WITHDRAWALS
     # ================================================================
@@ -902,9 +915,6 @@ class Database:
         method: str,
         account_no: str,
     ) -> tuple[str, Optional[dict]]:
-        """
-        Return status: ok, below_min, insufficient, error.
-        """
         if not math.isfinite(amount) or amount <= 0:
             return "error", None
 
@@ -1022,7 +1032,6 @@ class Database:
                 )
 
                 if refund_status != "ok":
-                    # Refund ব্যর্থ হলে pending-এ ফেরানোর চেষ্টা।
                     await self._db().table(
                         "withdrawals"
                     ).update(
@@ -1087,7 +1096,6 @@ class Database:
                 }).execute()
                 return True
             except Exception:
-                # অন্য instance একই সময়ে row তৈরি করতে পারে।
                 return False
 
         except Exception:

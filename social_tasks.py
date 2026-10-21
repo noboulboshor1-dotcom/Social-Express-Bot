@@ -167,7 +167,6 @@ def _gmail_task_kb() -> InlineKeyboardMarkup:
 def _gmail_task_text(task: dict) -> str:
     first, last = task_manager.display_names(task)
     reward_amount = CATEGORY_REWARDS.get("gmail", 10.0)
-    raw_recovery = task.get('recovery', '')
     return (
         "✏️ <b>নিচে দেওয়া তথ্য দিয়ে জিমেইল একাউন্ট তৈরি করুন:</b>\n\n"
         f"👤 <b>First Name:</b> <code>{html.escape(first)}</code>\n"
@@ -282,7 +281,7 @@ async def handle_category_selection(callback: CallbackQuery, state: FSMContext):
 
         account_info, password = parse_credentials(stock_item['account_data'])
         await db.mark_stock_as_used(stock_item['id'], user_id=user_id)
-        fb_reward = CATEGORY_REWARDS.get("facebook", 4.0)
+        fb_reward = CATEGORY_REWARDS.get("facebook") or 4.0
         
         f_name, l_name = random.choice(FIRST_NAMES), random.choice(LAST_NAMES)
         
@@ -313,7 +312,7 @@ async def handle_category_selection(callback: CallbackQuery, state: FSMContext):
 
         account_info, password = parse_credentials(stock_item['account_data'])
         await db.mark_stock_as_used(stock_item['id'], user_id=user_id)
-        fb_reward = CATEGORY_REWARDS.get("facebook_cookies", 8.0)
+        fb_reward = CATEGORY_REWARDS.get("facebook_cookies") or 8.0
         
         f_name, l_name = random.choice(FIRST_NAMES), random.choice(LAST_NAMES)
         
@@ -344,7 +343,7 @@ async def handle_category_selection(callback: CallbackQuery, state: FSMContext):
 
         username, password = parse_credentials(stock_item['account_data'])
         await db.mark_stock_as_used(stock_item['id'], user_id=user_id)
-        insta_reward = CATEGORY_REWARDS.get("instagram", 5.0)
+        insta_reward = CATEGORY_REWARDS.get("instagram") or 5.0
         
         await state.set_state(SocialTaskStates.waiting_for_insta_2fa)
         await state.update_data(insta_user=username, insta_pass=password)
@@ -371,7 +370,7 @@ async def handle_category_selection(callback: CallbackQuery, state: FSMContext):
 
         username, password = parse_credentials(stock_item['account_data'])
         await db.mark_stock_as_used(stock_item['id'], user_id=user_id)
-        insta_reward = CATEGORY_REWARDS.get("instagram_cookies", 8.0)
+        insta_reward = CATEGORY_REWARDS.get("instagram_cookies") or 8.0
         
         await state.set_state(SocialTaskStates.waiting_for_insta_cookies)
         await state.update_data(insta_user=username, insta_pass=password)
@@ -417,7 +416,6 @@ async def handle_prompt_insta_cookies(callback: CallbackQuery):
 # --- MESSAGE DATA HANDLERS (SENT TO ADMIN GROUP) ---
 @social_router.message(SocialTaskStates.waiting_for_fb_uid, F.text)
 async def process_fb_uid(message: Message, state: FSMContext):
-    # CANCEL BUTTON LOGIC
     if message.text in [BTN_CANCEL, "❌ Cancel", "❌ Cancel Task"] or message.text in MENU_BUTTONS:
         await state.clear()
         await db.release_user_task(message.from_user.id)
@@ -434,7 +432,6 @@ async def process_fb_uid(message: Message, state: FSMContext):
 
 @social_router.message(SocialTaskStates.waiting_for_fb_2fa, F.text)
 async def process_fb_2fa(message: Message, state: FSMContext):
-    # CANCEL BUTTON LOGIC
     if message.text in [BTN_CANCEL, "❌ Cancel", "❌ Cancel Task"] or message.text in MENU_BUTTONS:
         await state.clear()
         await db.release_user_task(message.from_user.id)
@@ -442,8 +439,15 @@ async def process_fb_2fa(message: Message, state: FSMContext):
         return
 
     two_fa = message.text.strip()
-    # 2FA VALIDATION (কমপক্ষে 15 অক্ষর, স্পেস ছাড়া)
     if len(two_fa.replace(" ", "")) >= 15 and two_fa.replace(" ", "").isalnum():
+        # ৬-ডিজিটের কোড জেনারেট করা
+        totp_result = task_manager.generate_totp(two_fa)
+        if not totp_result:
+            await message.answer("⚠️ আপনার দেওয়া 2FA Key টি সঠিক নয় বা ইনভ্যালিড। দয়া করে সঠিক Key দিন।", reply_markup=get_cancel_keyboard())
+            return
+            
+        code, _ = totp_result
+
         data = await state.get_data()
         uid = data.get("fb_uid")
         password = data.get("fb_pass", "N/A")
@@ -453,21 +457,28 @@ async def process_fb_2fa(message: Message, state: FSMContext):
         sub_id = await db.add_submission(user_id, "facebook_2fa", f"UID: {uid} | 2FA: {two_fa}")
         await state.clear()
         
-        await message.answer("⏳ <b>আপনার ফেসবুক 2FA কাজ জমা নেওয়া হয়েছে!</b>", parse_mode="HTML", reply_markup=get_main_keyboard())
+        # ইউজারকে কোড দেওয়া এবং সাবমিট মেসেজ
+        await message.answer(
+            f"✅ <b>2FA Key গৃহীত হয়েছে!</b>\n\n"
+            f"ফেসবুকে সেটআপ সম্পূর্ণ করতে নিচের ৬-ডিজিটের কোডটি বসান:\n"
+            f"👉 <code>{code}</code> 👈\n\n"
+            f"⏳ <b>আপনার কাজ অ্যাডমিনের কাছে রিভিউর জন্য জমা নেওয়া হয়েছে!</b>", 
+            parse_mode="HTML", 
+            reply_markup=get_main_keyboard()
+        )
         
         admin_kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Accept", callback_data=f"app_sub_{sub_id}_{user_id}_fb"),
              InlineKeyboardButton(text="❌ Reject", callback_data=f"rej_sub_{sub_id}_{user_id}_fb")]
         ])
         try:
-            await message.bot.send_message(ADMIN_GROUP_ID, f"📥 <b>নতুন টাস্ক (FB 2FA)</b>\nUID: <code>{uid}</code>\n2FA: <code>{two_fa}</code>\nUser ID: {user_id}", reply_markup=admin_kb)
+            await message.bot.send_message(ADMIN_GROUP_ID, f"📥 <b>নতুন টাস্ক (FB 2FA)</b>\nUID: <code>{uid}</code>\n🔑 Pass: <code>{password}</code>\n2FA: <code>{two_fa}</code>\nUser ID: {user_id}", reply_markup=admin_kb)
         except: pass
     else:
         await message.answer("⚠️ সঠিক 2FA Key দিন। এটি সাধারণত ১৫-৩২ অক্ষরের কোড হয়ে থাকে।", reply_markup=get_cancel_keyboard())
 
 @social_router.message(SocialTaskStates.waiting_for_fb_cookies_uid, F.text)
 async def process_fb_cookies_uid(message: Message, state: FSMContext):
-    # CANCEL BUTTON LOGIC
     if message.text in [BTN_CANCEL, "❌ Cancel", "❌ Cancel Task"] or message.text in MENU_BUTTONS:
         await state.clear()
         await db.release_user_task(message.from_user.id)
@@ -484,7 +495,6 @@ async def process_fb_cookies_uid(message: Message, state: FSMContext):
 
 @social_router.message(SocialTaskStates.waiting_for_fb_cookies, F.text)
 async def process_fb_cookies(message: Message, state: FSMContext):
-    # CANCEL BUTTON LOGIC
     if message.text in [BTN_CANCEL, "❌ Cancel", "❌ Cancel Task"] or message.text in MENU_BUTTONS:
         await state.clear()
         await db.release_user_task(message.from_user.id)
@@ -492,7 +502,6 @@ async def process_fb_cookies(message: Message, state: FSMContext):
         return
 
     cookies = message.text.strip()
-    # COOKIES VALIDATION (কমপক্ষে 30 অক্ষর)
     if len(cookies) >= 30:
         data = await state.get_data()
         uid = data.get("fb_uid")
@@ -510,14 +519,13 @@ async def process_fb_cookies(message: Message, state: FSMContext):
              InlineKeyboardButton(text="❌ Reject", callback_data=f"rej_sub_{sub_id}_{user_id}_fb_cookies")]
         ])
         try:
-            await message.bot.send_message(ADMIN_GROUP_ID, f"📥 <b>নতুন টাস্ক (FB Cookies)</b>\nUID: <code>{uid}</code>\nCookies: <code>{cookies[:30]}...</code>\nUser ID: {user_id}", reply_markup=admin_kb)
+            await message.bot.send_message(ADMIN_GROUP_ID, f"📥 <b>নতুন টাস্ক (FB Cookies)</b>\nUID: <code>{uid}</code>\n🔑 Pass: <code>{password}</code>\nCookies: <code>{cookies[:30]}...</code>\nUser ID: {user_id}", reply_markup=admin_kb)
         except: pass
     else:
         await message.answer("⚠️ Invalid Cookies! সঠিক এবং সম্পূর্ণ কুকিজ দিন।", reply_markup=get_cancel_keyboard())
 
 @social_router.message(SocialTaskStates.waiting_for_insta_2fa, F.text)
 async def process_insta_2fa(message: Message, state: FSMContext):
-    # CANCEL BUTTON LOGIC
     if message.text in [BTN_CANCEL, "❌ Cancel", "❌ Cancel Task"] or message.text in MENU_BUTTONS:
         await state.clear()
         await db.release_user_task(message.from_user.id)
@@ -525,8 +533,15 @@ async def process_insta_2fa(message: Message, state: FSMContext):
         return
 
     two_fa = message.text.strip()
-    # 2FA VALIDATION
     if len(two_fa.replace(" ", "")) >= 15 and two_fa.replace(" ", "").isalnum():
+        # ৬-ডিজিটের কোড জেনারেট করা
+        totp_result = task_manager.generate_totp(two_fa)
+        if not totp_result:
+            await message.answer("⚠️ আপনার দেওয়া 2FA Key টি সঠিক নয় বা ইনভ্যালিড। দয়া করে সঠিক Key দিন।", reply_markup=get_cancel_keyboard())
+            return
+            
+        code, _ = totp_result
+
         data = await state.get_data()
         username = data.get("insta_user")
         password = data.get("insta_pass")
@@ -536,21 +551,28 @@ async def process_insta_2fa(message: Message, state: FSMContext):
         sub_id = await db.add_submission(user_id, "instagram_2fa", f"Username: {username} | Pass: {password} | 2FA: {two_fa}")
         await state.clear()
         
-        await message.answer("⏳ <b>আপনার ইনস্টাগ্রাম 2FA কাজ জমা নেওয়া হয়েছে!</b>", parse_mode="HTML", reply_markup=get_main_keyboard())
+        # ইউজারকে কোড দেওয়া এবং সাবমিট মেসেজ
+        await message.answer(
+            f"✅ <b>2FA Key গৃহীত হয়েছে!</b>\n\n"
+            f"ইনস্টাগ্রামে সেটআপ সম্পূর্ণ করতে নিচের ৬-ডিজিটের কোডটি বসান:\n"
+            f"👉 <code>{code}</code> 👈\n\n"
+            f"⏳ <b>আপনার কাজ অ্যাডমিনের কাছে রিভিউর জন্য জমা নেওয়া হয়েছে!</b>", 
+            parse_mode="HTML", 
+            reply_markup=get_main_keyboard()
+        )
 
         admin_kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Accept", callback_data=f"app_sub_{sub_id}_{user_id}_insta"),
              InlineKeyboardButton(text="❌ Reject", callback_data=f"rej_sub_{sub_id}_{user_id}_insta")]
         ])
         try:
-            await message.bot.send_message(ADMIN_GROUP_ID, f"📥 <b>নতুন টাস্ক (Insta 2FA)</b>\nUser: <code>{username}</code>\n2FA: <code>{two_fa}</code>\nUser ID: {user_id}", reply_markup=admin_kb)
+            await message.bot.send_message(ADMIN_GROUP_ID, f"📥 <b>নতুন টাস্ক (Insta 2FA)</b>\nUser: <code>{username}</code>\n🔑 Pass: <code>{password}</code>\n2FA: <code>{two_fa}</code>\nUser ID: {user_id}", reply_markup=admin_kb)
         except: pass
     else:
         await message.answer("⚠️ সঠিক 2FA Key দিন। এটি সাধারণত ১৫-৩২ অক্ষরের কোড হয়ে থাকে।", reply_markup=get_cancel_keyboard())
 
 @social_router.message(SocialTaskStates.waiting_for_insta_cookies, F.text)
 async def process_insta_cookies(message: Message, state: FSMContext):
-    # CANCEL BUTTON LOGIC
     if message.text in [BTN_CANCEL, "❌ Cancel", "❌ Cancel Task"] or message.text in MENU_BUTTONS:
         await state.clear()
         await db.release_user_task(message.from_user.id)
@@ -558,7 +580,6 @@ async def process_insta_cookies(message: Message, state: FSMContext):
         return
 
     cookies = message.text.strip()
-    # COOKIES VALIDATION
     if len(cookies) >= 30:
         data = await state.get_data()
         username = data.get("insta_user")
@@ -576,7 +597,7 @@ async def process_insta_cookies(message: Message, state: FSMContext):
              InlineKeyboardButton(text="❌ Reject", callback_data=f"rej_sub_{sub_id}_{user_id}_insta_cookies")]
         ])
         try:
-            await message.bot.send_message(ADMIN_GROUP_ID, f"📥 <b>নতুন টাস্ক (Insta Cookies)</b>\nUser: <code>{username}</code>\nCookies: <code>{cookies[:30]}...</code>\nUser ID: {user_id}", reply_markup=admin_kb)
+            await message.bot.send_message(ADMIN_GROUP_ID, f"📥 <b>নতুন টাস্ক (Insta Cookies)</b>\nUser: <code>{username}</code>\n🔑 Pass: <code>{password}</code>\nCookies: <code>{cookies[:30]}...</code>\nUser ID: {user_id}", reply_markup=admin_kb)
         except: pass
     else:
         await message.answer("⚠️ Invalid Cookies! সঠিক এবং সম্পূর্ণ কুকিজ দিন।", reply_markup=get_cancel_keyboard())
@@ -590,29 +611,38 @@ async def handle_accept_submission(callback: CallbackQuery):
     user_id = int(parts[3])
     cat_type = parts[4]
     
-    if cat_type == "fb": reward = CATEGORY_REWARDS.get("facebook", 4.0)
-    elif cat_type == "fb_cookies": reward = CATEGORY_REWARDS.get("facebook_cookies", 8.0)
-    elif cat_type == "insta": reward = CATEGORY_REWARDS.get("instagram", 5.0)
-    elif cat_type == "insta_cookies": reward = CATEGORY_REWARDS.get("instagram_cookies", 8.0)
-    elif cat_type == "gmail": reward = CATEGORY_REWARDS.get("gmail", 10.0)
+    # Config file থেকে ক্যাটাগরি অনুযায়ী রেট ফেচ করা হচ্ছে
+    if cat_type == "fb": reward = CATEGORY_REWARDS.get("facebook")
+    elif cat_type == "fb_cookies": reward = CATEGORY_REWARDS.get("facebook_cookies")
+    elif cat_type == "insta": reward = CATEGORY_REWARDS.get("instagram")
+    elif cat_type == "insta_cookies": reward = CATEGORY_REWARDS.get("instagram_cookies")
+    elif cat_type == "gmail": reward = CATEGORY_REWARDS.get("gmail")
     else: reward = 5.0
 
-    await db.update_submission_status(sub_id, "accepted")
-    await db.add_user_balance(user_id, reward)
+    # ডাটাবেজের ফাংশন কল করে ব্যালেন্স, রেফারেল এবং টাস্ক কাউন্ট আপডেট
+    result = await db.approve_submission_and_reward(sub_id, user_id, reward)
     
     try:
         await callback.message.edit_text(callback.message.html_text + "\n\n✅ <b>ACCEPTED</b>", parse_mode="HTML")
     except: pass
     await callback.answer("Accepted!", show_alert=True)
     
-    try:
-        await callback.bot.send_message(
-            user_id,
-            "🎉 <b>আপনার টাস্কটি এডমিন দ্বারা সফলভাবে গৃহীত হয়েছে!</b>\n\n"
-            f"💰 আপনার ব্যালেন্সে <b>+{reward:.2f} BDT</b> যোগ করা হয়েছে।"
-        )
-    except Exception: pass
-
+    if result:
+        try:
+            await callback.bot.send_message(
+                user_id,
+                "🎉 <b>আপনার টাস্কটি এডমিন দ্বারা সফলভাবে গৃহীত হয়েছে!</b>\n\n"
+                f"💰 আপনার ব্যালেন্সে <b>+{reward:.2f} BDT</b> যোগ করা হয়েছে।"
+            )
+        except Exception: pass
+        
+        if result.get("referrer_id") and result.get("commission") > 0:
+            try:
+                await callback.bot.send_message(
+                    result["referrer_id"], 
+                    f"🎁 রেফারেল কমিশন: <b>+{result['commission']:.4f} BDT</b>"
+                )
+            except Exception: pass
 
 @social_router.callback_query(F.data.startswith("rej_sub_"))
 async def handle_reject_prompt(callback: CallbackQuery, state: FSMContext):
