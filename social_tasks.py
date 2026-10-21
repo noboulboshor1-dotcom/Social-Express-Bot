@@ -698,3 +698,30 @@ async def export_accepted_accounts(message: Message):
     file_bytes = io.BytesIO(file_content.encode('utf-8'))
     document = BufferedInputFile(file_bytes.getvalue(), filename="accounts_list.txt")
     await message.answer_document(document=document, caption="📄 <b>একসেপ্ট হওয়া সকল অ্যাকাউন্টের লিস্ট।</b>")
+    
+# --- ADMIN CHECK STOCK (/stock) ---
+@social_router.message(Command("stock"))
+async def check_current_stock(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    try:
+        client = db._db()
+        # Facebook এর এভেইলেবল স্টক চেক
+        fb_res = await client.table("stock_accounts").select("id", count="exact").eq("category", "facebook").eq("is_used", False).execute()
+        fb_count = fb_res.count or 0
+        
+        # Instagram এর এভেইলেবল স্টক চেক
+        insta_res = await client.table("stock_accounts").select("id", count="exact").eq("category", "instagram").eq("is_used", False).execute()
+        insta_count = insta_res.count or 0
+        
+        await message.answer(
+            f"📊 <b>বর্তমান স্টক স্ট্যাটাস:</b>\n\n"
+            f"📘 Facebook: <code>{fb_count}</code> টি কাজ বাকি আছে\n"
+            f"📸 Instagram: <code>{insta_count}</code> টি কাজ বাকি আছে\n\n"
+            f"<i>(জিমেইল টাস্ক অটোমেটিক জেনারেট হয়, তাই সেটির স্টকের প্রয়োজন নেই)</i>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await message.answer("⚠️ স্টক চেক করতে সমস্যা হয়েছে। ডাটাবেজ কানেকশন চেক করুন।")
+        
