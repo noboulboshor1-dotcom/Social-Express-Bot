@@ -37,7 +37,7 @@ ADMIN_IDS: list[int] = [
     if item.strip().isdigit()
 ]
 # আপনার অ্যাডমিন গ্রুপের আইডি 
-ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "-5409636132"))
+ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "-1004205093860"))
 
 
 # --- Validation -------------------------------------------------------------
