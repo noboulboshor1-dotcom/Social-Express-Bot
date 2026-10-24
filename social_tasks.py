@@ -100,7 +100,7 @@ async def process_stock_text_input(message: Message, state: FSMContext):
     lines = message.text.strip().split('\n')
     added_count = 0
     
-        if category == "gmail":
+    if category == "gmail":
         task_list = []
         for line in lines:
             parts = line.strip().split('|')
@@ -130,7 +130,7 @@ async def process_stock_text_input(message: Message, state: FSMContext):
             if line_data:
                 await db.add_stock_account(category=category, account_data=line_data)
                 added_count += 1
-            
+                
     await message.answer(
         f"✅ <b>সফলভাবে স্টক যুক্ত হয়েছে!</b>\n\n"
         f"📂 ক্যাটাগরি: <code>{category.upper()}</code>\n"
@@ -138,6 +138,7 @@ async def process_stock_text_input(message: Message, state: FSMContext):
         reply_markup=get_main_keyboard(),
         parse_mode="HTML"
     )
+
 
 
 # --- TASK MENUS ---
