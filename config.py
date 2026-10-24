@@ -69,10 +69,10 @@ VERIFY_REQUIRE_ADDRESS = _env_bool("VERIFY_REQUIRE_ADDRESS", True)
 # Reward rates for approved, proof-based task categories are set in review_csv.py.
 # ক্যাটাগরিভিত্তিক ফিক্সড রিওয়ার্ড (টাকা বা পয়েন্ট)
 CATEGORY_REWARDS = {
-    "gmail": 10.00,      
-    "facebook": 4.00,    
-    "instagram": 5.00,
+    "gmail": 13.00,      
+    "facebook": 3.50,    
+    "instagram": 2.80,
     "facebook_cookies": 4.00,
-    "instagram_cookies": 5.00
+    "instagram_cookies": 3.50
 }
 
