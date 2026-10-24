@@ -100,20 +100,30 @@ async def process_stock_text_input(message: Message, state: FSMContext):
     lines = message.text.strip().split('\n')
     added_count = 0
     
-    if category == "gmail":
+        if category == "gmail":
         task_list = []
         for line in lines:
             parts = line.strip().split('|')
-            if len(parts) >= 3:
+            if len(parts) >= 2: # এখন অন্তত ২টি অংশ (ইমেইল ও পাসওয়ার্ড) পেলেই কাজ করবে
+                email = parts[0].strip()
+                password = parts[1].strip()
+                
+                # যদি রিকভারি মেইল দেওয়া থাকে তবে সেটি নেবে, না থাকলে অটোমেটিক রেন্ডম মেইল বানিয়ে নেবে
+                if len(parts) >= 3 and parts[2].strip():
+                    recovery = parts[2].strip()
+                else:
+                    recovery = f"user_{random.randint(100000, 999999)}@mail.tm" # অটো রিকভারি
+                
                 task_list.append({
-                    "email": parts[0].strip(),
-                    "password": parts[1].strip(),
-                    "recovery": parts[2].strip(),
+                    "email": email,
+                    "password": password,
+                    "recovery": recovery,
                     "reward": CATEGORY_REWARDS.get("gmail", 10.0),
                     "status": "available"
                 })
         if task_list:
             added_count = await db.add_bulk_tasks(task_list)
+
     else:
         for line in lines:
             line_data = line.strip()
