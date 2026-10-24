@@ -67,15 +67,22 @@ async def handle_addstock_start(message: Message, command: CommandObject, state:
         return
     
     args = command.args.strip().lower() if command.args else ""
-    if args not in ["facebook", "instagram"]:
-        await message.answer("⚠️ সঠিক নিয়মে ব্যবহার করুন:\n👉 <code>/addstock facebook</code> অথবা\n👉 <code>/addstock instagram</code> লিখে সেন্ড করুন।")
+    if args not in ["facebook", "instagram", "gmail"]:
+        await message.answer("⚠️ সঠিক নিয়মে ব্যবহার করুন:\n👉 <code>/addstock facebook</code>\n👉 <code>/addstock instagram</code>\n👉 <code>/addstock gmail</code>")
         return
     
     await state.set_state(SocialTaskStates.waiting_for_stock_data)
     await state.update_data(stock_category=args)
+    
+    if args == "gmail":
+        format_msg = "📌 <b>ফরম্যাট:</b>\n<code>email|password|recovery_email</code>\n\n(প্রতি লাইনে একটি করে)"
+    else:
+        format_msg = "📌 <b>ফরম্যাট:</b>\n<code>ID|Password</code>\n\n(প্রতি লাইনে একটি করে)"
+
     await message.answer(
-        f"📂 নির্বাচিত ক্যাটাগরি: <b>{args}</b>\n\n"
-        "📝 এখন আপনার একাউন্ট বা টাস্কগুলোর লিস্ট (প্রতি লাইনে একটি করে) কপি করে এই চ্যাটে পেস্ট করে পাঠিয়ে দিন:"
+        f"📂 নির্বাচিত ক্যাটাগরি: <b>{args.upper()}</b>\n\n"
+        f"📝 এখন আপনার একাউন্ট বা টাস্কগুলোর লিস্ট কপি করে পাঠিয়ে দিন:\n\n{format_msg}",
+        parse_mode="HTML"
     )
 
 @social_router.message(SocialTaskStates.waiting_for_stock_data, F.text)
@@ -93,17 +100,33 @@ async def process_stock_text_input(message: Message, state: FSMContext):
     lines = message.text.strip().split('\n')
     added_count = 0
     
-    for line in lines:
-        line_data = line.strip()
-        if line_data:
-            await db.add_stock_account(category=category, account_data=line_data)
-            added_count += 1
+    if category == "gmail":
+        task_list = []
+        for line in lines:
+            parts = line.strip().split('|')
+            if len(parts) >= 3:
+                task_list.append({
+                    "email": parts[0].strip(),
+                    "password": parts[1].strip(),
+                    "recovery": parts[2].strip(),
+                    "reward": CATEGORY_REWARDS.get("gmail", 10.0),
+                    "status": "available"
+                })
+        if task_list:
+            added_count = await db.add_bulk_tasks(task_list)
+    else:
+        for line in lines:
+            line_data = line.strip()
+            if line_data:
+                await db.add_stock_account(category=category, account_data=line_data)
+                added_count += 1
             
     await message.answer(
         f"✅ <b>সফলভাবে স্টক যুক্ত হয়েছে!</b>\n\n"
-        f"📂 ক্যাটাগরি: <code>{category}</code>\n"
+        f"📂 ক্যাটাগরি: <code>{category.upper()}</code>\n"
         f"🔢 মোট যুক্ত হয়েছে: <code>{added_count} টি</code>",
-        reply_markup=get_main_keyboard()
+        reply_markup=get_main_keyboard(),
+        parse_mode="HTML"
     )
 
 
@@ -237,11 +260,14 @@ async def handle_verify_task(callback: CallbackQuery, state: FSMContext):
                     logger.error("Could not send to admin group: %s", e)
                 return
             
-            elif code == UNSUPPORTED:
-                reason = "⚠️ এই টাস্কের রিকভারি মেইল অটো-ভেরিফাই সাপোর্ট করে না।"
-            else:
-                reason = "গুগল থেকে রিকভারি মেইলে কনফার্মেশন মেসেজ আসেনি। আবার চেষ্টা করুন:"
-            await safe_edit(callback.message, _gmail_task_text(task) + f"\n\n❌ <b>ভেরিফিকেশন ব্যর্থ!</b>\n{reason}", _gmail_task_kb())
+            # ভেরিফাই ব্যর্থ হলে ম্যানুয়াল সাবমিট বাটন দেখানো
+            reason = "গুগল থেকে রিকভারি মেইলে কনফার্মেশন মেসেজ আসেনি। আপনি চাইলে অ্যাডমিনকে ম্যানুয়ালি চেক করার জন্য পাঠাতে পারেন।"
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 আবার চেক করুন", callback_data="verify_task")],
+                [InlineKeyboardButton(text="📩 ম্যানুয়াল সাবমিট", callback_data="manual_submit_gmail")],
+                [InlineKeyboardButton(text="❌ Cancel Task", callback_data="cancel_task")]
+            ])
+            await safe_edit(callback.message, _gmail_task_text(task) + f"\n\n❌ <b>ভেরিফিকেশন ব্যর্থ!</b>\n{reason}", kb)
             return
 
         result = await db.complete_task(task["id"], user_id)
@@ -265,6 +291,34 @@ async def handle_verify_task(callback: CallbackQuery, state: FSMContext):
             except: pass
     finally:
         _verifying.discard(user_id)
+
+# --- ম্যানুয়াল সাবমিট বাটন হ্যান্ডলার ---
+@social_router.callback_query(F.data == "manual_submit_gmail")
+async def handle_manual_submit_gmail(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    task = await db.get_user_assigned_task(user_id)
+    if not task:
+        await callback.answer("⚠️ টাস্ক পাওয়া যায়নি বা বাতিল হয়ে গেছে।", show_alert=True)
+        return
+        
+    sub_id = await db.add_submission(user_id, "gmail", f"Email: {task['email']} | Pass: {task['password']}")
+    
+    # টাস্কটি স্টকে যেন ফেরত না যায় তাই 'submitted' স্ট্যাটাস দেওয়া হলো
+    client = db._db()
+    await client.table("tasks").update({"status": "submitted"}).eq("id", task["id"]).execute()
+    
+    await state.clear()
+    await safe_edit(callback.message, "⏳ <b>আপনার কাজটি ম্যানুয়াল রিভিউর জন্য জমা নেওয়া হয়েছে!</b>\n\nঅ্যাডমিন এটি চেক করে একসেপ্ট করলে ব্যালেন্স যুক্ত হবে।")
+    await callback.message.answer("প্রধান মেনু:", reply_markup=get_main_keyboard())
+    
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Accept", callback_data=f"app_sub_{sub_id}_{user_id}_gmail"),
+         InlineKeyboardButton(text="❌ Reject", callback_data=f"rej_sub_{sub_id}_{user_id}_gmail")]
+    ])
+    try:
+        await callback.bot.send_message(ADMIN_GROUP_ID, f"📥 <b>নতুন টাস্ক (Gmail - Manual)</b>\n📧 Email: <code>{task['email']}</code>\n🔑 Pass: <code>{task['password']}</code>\n🆔 User ID: {user_id}", reply_markup=admin_kb)
+    except: pass
+    await callback.answer()
 
 
 # --- FACEBOOK AND INSTAGRAM TASK SELECTION ---
@@ -715,13 +769,17 @@ async def check_current_stock(message: Message):
         insta_res = await client.table("stock_accounts").select("id", count="exact").eq("category", "instagram").eq("is_used", False).execute()
         insta_count = insta_res.count or 0
         
+        # Gmail এর ম্যানুয়াল স্টক চেক
+        gmail_res = await client.table("tasks").select("id", count="exact").eq("status", "available").execute()
+        gmail_count = gmail_res.count or 0
+        
         await message.answer(
             f"📊 <b>বর্তমান স্টক স্ট্যাটাস:</b>\n\n"
             f"📘 Facebook: <code>{fb_count}</code> টি কাজ বাকি আছে\n"
-            f"📸 Instagram: <code>{insta_count}</code> টি কাজ বাকি আছে\n\n"
-            f"<i>(জিমেইল টাস্ক অটোমেটিক জেনারেট হয়, তাই সেটির স্টকের প্রয়োজন নেই)</i>",
+            f"📸 Instagram: <code>{insta_count}</code> টি কাজ বাকি আছে\n"
+            f"📧 Gmail (Manual): <code>{gmail_count}</code> টি কাজ বাকি আছে\n\n"
+            f"<i>(জিমেইল ম্যানুয়াল স্টক শেষ হলে বট অটোমেটিক টাস্ক দেওয়া শুরু করবে)</i>",
             parse_mode="HTML"
         )
     except Exception as e:
         await message.answer("⚠️ স্টক চেক করতে সমস্যা হয়েছে। ডাটাবেজ কানেকশন চেক করুন।")
-        
