@@ -112,7 +112,9 @@ async def process_stock_text_input(message: Message, state: FSMContext):
                 if len(parts) >= 3 and parts[2].strip():
                     recovery = parts[2].strip()
                 else:
-                    recovery = f"user_{random.randint(100000, 999999)}@maxxspace.com"# অটো রিকভারি
+    # গুগলের স্প্যাম ফিল্টার বাইপাস করার জন্য আসল নামের মতো মেইল তৈরি
+    random_name = random.choice(FIRST_NAMES).lower()
+    recovery = f"{random_name}{random.randint(1000, 9999)}@maxxspace.com"
                 
                 task_list.append({
                     "email": email,
