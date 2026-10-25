@@ -112,7 +112,7 @@ async def process_stock_text_input(message: Message, state: FSMContext):
                 if len(parts) >= 3 and parts[2].strip():
                     recovery = parts[2].strip()
                 else:
-                    recovery = f"user_{random.randint(100000, 999999)}@mail.tm" # অটো রিকভারি
+                    recovery = f"user_{random.randint(100000, 999999)}@maxxspace.com" # অটো রিকভারি
                 
                 task_list.append({
                     "email": email,
