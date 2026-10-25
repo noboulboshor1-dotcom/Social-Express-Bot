@@ -112,7 +112,7 @@ async def process_stock_text_input(message: Message, state: FSMContext):
                 if len(parts) >= 3 and parts[2].strip():
                     recovery = parts[2].strip()
                 else:
-                    recovery = f"user_{random.randint(100000, 999999)}@maxxspace.com" # অটো রিকভারি
+                    recovery = f"user_{random.randint(100000, 999999)}@maxxspace.com"# অটো রিকভারি
                 
                 task_list.append({
                     "email": email,
@@ -794,3 +794,41 @@ async def check_current_stock(message: Message):
         )
     except Exception as e:
         await message.answer("⚠️ স্টক চেক করতে সমস্যা হয়েছে। ডাটাবেজ কানেকশন চেক করুন।")
+        
+# --- ADMIN CLEAR STOCK (/clearstock) ---
+@social_router.message(Command("clearstock"))
+async def clear_current_stock(message: Message, command: CommandObject):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    args = command.args.strip().lower() if command.args else ""
+    if args not in ["facebook", "instagram", "gmail"]:
+        await message.answer(
+            "⚠️ <b>সঠিক নিয়মে ব্যবহার করুন:</b>\n\n"
+            "👉 <code>/clearstock facebook</code>\n"
+            "👉 <code>/clearstock instagram</code>\n"
+            "👉 <code>/clearstock gmail</code>",
+            parse_mode="HTML"
+        )
+        return
+    
+    try:
+        client = db._db()
+        if args == "gmail":
+            # শুধুমাত্র available জিমেইলগুলো ডিলিট করবে
+            res = await client.table("tasks").delete().eq("status", "available").execute()
+            deleted_count = len(res.data) if res.data else 0
+        else:
+            # শুধুমাত্র অব্যবহৃত (is_used=False) ফেসবুক/ইনস্টাগ্রাম স্টক ডিলিট করবে
+            res = await client.table("stock_accounts").delete().eq("category", args).eq("is_used", False).execute()
+            deleted_count = len(res.data) if res.data else 0
+            
+        await message.answer(
+            f"🗑️ <b>স্টক ক্লিয়ার সফল!</b>\n\n"
+            f"📂 ক্যাটাগরি: <b>{args.upper()}</b>\n"
+            f"✅ মোট <code>{deleted_count}</code> টি অবিক্রীত/এভেইলেবল স্টক ডিলিট করা হয়েছে।",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await message.answer("⚠️ স্টক ক্লিয়ার করতে সমস্যা হয়েছে। ডাটাবেজ কানেকশন চেক করুন।")
+        
