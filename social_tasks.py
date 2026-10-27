@@ -108,14 +108,12 @@ async def process_stock_text_input(message: Message, state: FSMContext):
                 email = parts[0].strip()
                 password = parts[1].strip()
                 
-                # যদি রিকভারি মেইল দেওয়া থাকে তবে সেটি নেবে, না থাকলে অটোমেটিক রেন্ডম মেইল বানিয়ে নেবে
+                                # রিকভারি মেইল দেওয়া থাকলে সেটি নেবে, না থাকলে একদম ফাঁকা (empty) রাখবে
                 if len(parts) >= 3 and parts[2].strip():
                     recovery = parts[2].strip()
                 else:
-                    # গুগলের স্প্যাম ফিল্টার বাইপাস করার জন্য আসল নামের মতো মেইল তৈরি
-                    random_name = random.choice(FIRST_NAMES).lower()
-                    recovery = f"{random_name}{random.randint(1000, 9999)}@maxxspace.com"
-             
+                    recovery = ""
+ 
                 task_list.append({
                     "email": email,
                     "password": password,
@@ -196,22 +194,30 @@ async def back_to_tasks(callback: CallbackQuery):
 # --- GMAIL SMART VERIFY FEATURE ---
 def _gmail_task_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Verify Task", callback_data="verify_task")],
+        [InlineKeyboardButton(text="✅ Submit Task", callback_data="verify_task")],
+        [InlineKeyboardButton(text="🔄 Change Task", callback_data="change_gmail_task")],
         [InlineKeyboardButton(text="❌ Cancel Task", callback_data="cancel_task")],
     ])
+
+
 
 def _gmail_task_text(task: dict) -> str:
     first, last = task_manager.display_names(task)
     reward_amount = CATEGORY_REWARDS.get("gmail", 10.0)
+    
+    # রিকভারি মেইল থাকলে সেটি দেখাবে, না থাকলে ফাঁকা রাখবে
+    recovery_text = f"🛡️ <b>Recovery Email:</b>\n<code>{html.escape(task['recovery'])}</code>\n\n" if task.get('recovery') else ""
+    
     return (
         "✏️ <b>নিচে দেওয়া তথ্য দিয়ে জিমেইল একাউন্ট তৈরি করুন:</b>\n\n"
         f"👤 <b>First Name:</b> <code>{html.escape(first)}</code>\n"
         f"👤 <b>Last Name:</b> <code>{html.escape(last)}</code>\n"
         f"📧 <b>Email:</b> <code>{html.escape(task['email'])}</code>\n"
         f"🔑 <b>Password:</b> <code>{html.escape(task['password'])}</code>\n\n"
-        f"🛡️ <b>Recovery Email:</b>\n<code>{html.escape(task['recovery'])}</code>\n"
+        f"{recovery_text}"
         f"💰 <b>রিওয়ার্ড:</b> <code>{reward_amount:.2f} BDT</code>"
     )
+
 
 @social_router.callback_query(F.data == "show_gmail_tasks")
 async def show_gmail_tasks_flow(callback: CallbackQuery, state: FSMContext):
@@ -229,9 +235,10 @@ async def show_gmail_tasks_flow(callback: CallbackQuery, state: FSMContext):
 async def handle_verify_task(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     if user_id in _verifying:
-        await callback.answer("⏳ ভেরিফিকেশন চলছে, অপেক্ষা করুন...")
+        await callback.answer("⏳ প্রসেস হচ্ছে, অপেক্ষা করুন...")
         return
     _verifying.add(user_id)
+    
     try:
         task = await db.get_user_assigned_task(user_id)
         if not task:
@@ -240,70 +247,67 @@ async def handle_verify_task(callback: CallbackQuery, state: FSMContext):
             await safe_edit(callback.message, "⚠️ টাস্কটির মেয়াদ শেষ হয়ে গেছে।")
             return
 
-        await callback.answer()
-        await safe_edit(callback.message, "🔍 ইনবক্স চেক করা হচ্ছে... দয়া করে অপেক্ষা করুন ⏳")
-        verified, code = await inbox_verifier.check_inbox(task["recovery"], task["email"])
-
-        if not verified:
-            if code == API_ERROR:
-                sub_id = await db.add_submission(user_id, "gmail", f"Email: {task['email']} | Pass: {task['password']}")
-                await state.clear()
-                
-                await safe_edit(
-                    callback.message,
-                    "⏳ <b>আপনার কাজটি ম্যানুয়াল রিভিউর জন্য জমা নেওয়া হয়েছে!</b>\n\n"
-                    "অটো-ভেরিফিকেশন সার্ভার সাময়িক ডাউন থাকায় এটি অ্যাডমিন দ্বারা চেক করা হবে। রিভিউর পর ব্যালেন্স যুক্ত হবে।"
-                )
-                await callback.message.answer("প্রধান মেনু:", reply_markup=get_main_keyboard())
-                
-                admin_kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="✅ Accept", callback_data=f"app_sub_{sub_id}_{user_id}_gmail"),
-                     InlineKeyboardButton(text="❌ Reject", callback_data=f"rej_sub_{sub_id}_{user_id}_gmail")]
-                ])
-                try:
-                    await callback.bot.send_message(
-                        ADMIN_GROUP_ID,
-                        f"📥 <b>নতুন টাস্ক (Gmail)</b>\n"
-                        f"📧 Email: <code>{task['email']}</code>\n"
-                        f"🔑 Pass: <code>{task['password']}</code>\n"
-                        f"🆔 User ID: {user_id}",
-                        reply_markup=admin_kb
-                    )
-                except Exception as e:
-                    logger.error("Could not send to admin group: %s", e)
-                return
-            
-            # ভেরিফাই ব্যর্থ হলে ম্যানুয়াল সাবমিট বাটন দেখানো
-            reason = "গুগল থেকে রিকভারি মেইলে কনফার্মেশন মেসেজ আসেনি। আপনি চাইলে অ্যাডমিনকে ম্যানুয়ালি চেক করার জন্য পাঠাতে পারেন।"
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔄 আবার চেক করুন", callback_data="verify_task")],
-                [InlineKeyboardButton(text="📩 ম্যানুয়াল সাবমিট", callback_data="manual_submit_gmail")],
-                [InlineKeyboardButton(text="❌ Cancel Task", callback_data="cancel_task")]
-            ])
-            await safe_edit(callback.message, _gmail_task_text(task) + f"\n\n❌ <b>ভেরিফিকেশন ব্যর্থ!</b>\n{reason}", kb)
-            return
-
-        result = await db.complete_task(task["id"], user_id)
+        # সরাসরি ম্যানুয়াল সাবমিশনের জন্য ডাটাবেজে এন্ট্রি
+        sub_id = await db.add_submission(user_id, "gmail", f"Email: {task['email']} | Pass: {task['password']}")
+        
+        client = db._db()
+        await client.table("tasks").update({"status": "submitted"}).eq("id", task["id"]).execute()
+        
         await state.clear()
-        if not result:
-            await safe_edit(callback.message, "⚠️ টাস্ক কমপ্লিট করতে সমস্যা হয়েছে।")
-            return
-
-        append_to_csv('gmail_master.csv', [task["email"], task["password"]])
-
+        
+        # ইউজারকে সাবমিট মেসেজ দেওয়া
         await safe_edit(
             callback.message,
-            "🎉 <b>অভিনন্দন! আপনার টাস্ক সফলভাবে ভেরিফাই হয়েছে।</b>\n\n"
-            f"💰 ব্যালেন্সে যোগ হয়েছে: <b>+{result['reward']:g} BDT</b>",
+            "⏳ <b>আপনার কাজটি ম্যানুয়াল রিভিউর জন্য জমা নেওয়া হয়েছে!</b>\n\n"
+            "অ্যাডমিন এটি চেক করে একসেপ্ট করলে আপনার ব্যালেন্সে টাকা যুক্ত হবে।"
         )
         await callback.message.answer("প্রধান মেনু:", reply_markup=get_main_keyboard())
-
-        if result["referrer_id"] and result["commission"] > 0:
-            try:
-                await callback.bot.send_message(result["referrer_id"], f"🎁 রেফারেল কমিশন: <b>+{result['commission']:.4f} BDT</b>")
-            except: pass
+        
+        # অ্যাডমিন গ্রুপে টাস্ক পাঠানো
+        admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Accept", callback_data=f"app_sub_{sub_id}_{user_id}_gmail"),
+             InlineKeyboardButton(text="❌ Reject", callback_data=f"rej_sub_{sub_id}_{user_id}_gmail")]
+        ])
+        try:
+            await callback.bot.send_message(
+                ADMIN_GROUP_ID,
+                f"📥 <b>নতুন টাস্ক (Gmail - Manual)</b>\n"
+                f"📧 Email: <code>{task['email']}</code>\n"
+                f"🔑 Pass: <code>{task['password']}</code>\n"
+                f"🆔 User ID: {user_id}",
+                reply_markup=admin_kb
+            )
+        except Exception as e:
+            logger.error("Could not send to admin group: %s", e)
+            
     finally:
         _verifying.discard(user_id)
+        
+     
+# --- CHANGE TASK BUTTON HANDLER ---
+@social_router.callback_query(F.data == "change_gmail_task")
+async def handle_change_gmail_task(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    task = await db.get_user_assigned_task(user_id)
+    
+    if task:
+        # যেহেতু ইমেইলটি গুগলে Available নেই, তাই এটি ডাটাবেজ থেকে মুছে ফেলা হচ্ছে
+        client = db._db()
+        await client.table("tasks").delete().eq("id", task["id"]).execute()
+    
+    # স্টক থেকে নতুন একটি কাজ ক্লেইম করা
+    new_task = await db.claim_task(user_id, fallback_task=await task_manager.generate_random_gmail())
+    if not new_task:
+        await callback.answer("⚠️ স্টকে আর কোনো নতুন টাস্ক নেই।", show_alert=True)
+        return
+        
+    await state.set_state(SocialTaskStates.working_on_gmail)
+    
+    # ইউজারের স্ক্রিনে নতুন টাস্কটি আপডেট করে দেওয়া
+    await safe_edit(callback.message, _gmail_task_text(new_task), _gmail_task_kb())
+    await callback.answer("🔄 নতুন টাস্ক দেওয়া হয়েছে!")
+
+
 
 # --- ম্যানুয়াল সাবমিট বাটন হ্যান্ডলার ---
 @social_router.callback_query(F.data == "manual_submit_gmail")
